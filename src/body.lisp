@@ -1,12 +1,44 @@
 ;;;; -*- Mode: Lisp; indent-tabs-mode: nil -*-
 (in-package :squirl)
 
+(defmacro defbody (name)
+  (let ((*package* (symbol-package name)))
+    `(progn
+       (defstruct (,name
+                    (:include body)
+                    (:constructor ,(symbolicate "%MAKE-" name)
+                                (%mass %inertia calculate-inertia-p position
+                                         velocity force actor
+                                         %angle angular-velocity
+                                         &aux
+                                         (inverse-mass
+                                          (without-floating-point-underflow
+                                            (if (zerop %mass) 0d0 (/ %mass))))
+                                         (inverse-inertia
+                                          (without-floating-point-underflow
+                                            (if (zerop %inertia) 0d0 (/ %inertia))))
+                                         (rotation (angle->vec %angle))))))
+       (defun ,(symbolicate "MAKE-" name)
+         (&key (mass 0d0) (inertia most-positive-double-float) (calculate-inertia-p t)
+            (position +zero-vector+) (velocity +zero-vector+) (force +zero-vector+)
+            actor shapes (angle 0d0) (angular-velocity 0d0))
+         (aprog1 (,(symbolicate "%MAKE-" name)
+                  (float mass 0d0) (float inertia 1d0) calculate-inertia-p position velocity
+                  force actor (float angle 0d0) (float angular-velocity 0d0))
+           (attach-shapes shapes it))))))
+
 (defstruct (body
              (:constructor
-              %make-body (%mass %inertia position velocity force actor %angle
-                                &aux (inverse-mass (/ %mass))
-                                     (inverse-inertia (/ %inertia))
-                                     (rotation (angle->vec %angle)))))
+              %make-body (%mass %inertia calculate-inertia-p
+                                position velocity force actor %angle angular-velocity
+                                &aux
+                                (inverse-mass
+                                 (without-floating-point-underflow
+                                   (if (zerop %mass) 0d0 (/ %mass))))
+                                (inverse-inertia
+                                 (without-floating-point-underflow
+                                   (if (zerop %inertia) 0d0 (/ %inertia))))
+                                (rotation (angle->vec %angle)))))
   world                 ; world that this body is attached to, if any.
   actor                 ; Actor used for the COLLIDE "callback"
   %shapes               ; shapes associated with this body.
@@ -15,6 +47,7 @@
   (inverse-mass (assert nil) :type double-float)
   (%inertia (assert nil) :type double-float)
   (inverse-inertia (assert nil) :type double-float)
+  (calculate-inertia-p t :type boolean)
   ;; Linear components of motion
   (position +zero-vector+ :type vec)
   (velocity +zero-vector+ :type vec)
@@ -28,17 +61,16 @@
   (velocity-bias +zero-vector+ :type vec)
   (angular-velocity-bias 0d0 :type double-float))
 
-(defun make-body (&key (mass most-positive-double-float) (inertia most-positive-double-float)
+(defun make-body (&key (mass 0d0) (inertia most-positive-double-float) (calculate-inertia-p t)
                   (position +zero-vector+) (velocity +zero-vector+) (force +zero-vector+) actor
-                  shapes (angle 0d0))
-  (let ((body (%make-body (float mass 0d0) (float inertia 1d0) position velocity
-                          force actor (float angle 0d0))))
-    (map nil (fun (attach-shape _ body)) shapes)
+                  shapes (angle 0d0) (angular-velocity 0d0))
+  (let ((body (%make-body (float mass 0d0) (float inertia 1d0) calculate-inertia-p position velocity
+                          force actor (float angle 0d0) (float angular-velocity 0d0))))
+    (attach-shapes shapes body)
     body))
 
 (defun staticp (body)
-  (when (= most-positive-double-float (body-mass body) (body-inertia body))
-    t))
+  (when (= 0 (body-mass body)) t))
 
 (defun body-attached-p (body world)
   (eq world (body-world body)))
@@ -57,12 +89,13 @@
                      (defun (setf ,external) (new-value body)
                        (setf (,internal body) new-value
                              (,cached body) (,wrapper new-value))))))
-  (wrap body-mass body-%mass body-inverse-mass /)
-  (wrap body-inertia body-%inertia body-inverse-inertia /)
+  (wrap body-mass body-%mass body-inverse-mass maybe-inverse)
+  (wrap body-inertia body-%inertia body-inverse-inertia maybe-inverse)
   (wrap body-angle body-%angle body-rotation angle->vec))
 
 (defgeneric body-update-velocity (body gravity damping dt)
   (:method ((body body) gravity damping dt)
+    (declare (optimize speed) (double-float dt) (vec gravity))
     (with-accessors ((angular-velocity body-angular-velocity)
                      (inv-inertia body-inverse-inertia)
                      (inv-mass body-inverse-mass)
@@ -74,7 +107,8 @@
                   (vec* (vec+ gravity (vec* force inv-mass)) dt)))
       (setf angular-velocity
             (+ (* angular-velocity damping)
-               (* torque inv-inertia dt))))))
+               (* torque inv-inertia dt)))
+      (values))))
 
 (defgeneric body-update-position (body dt)
   (:method ((body body) dt)
@@ -121,12 +155,14 @@ gravity (also in world coordinates)."
 
 (defun body-apply-bias-impulse (body impulse relative)
   ;; From C: "Not intended for external use. Used by cpArbiter.c and cpConstraint.c."
+  (declare (optimize speed))
   (with-accessors ((angular-velocity-bias body-angular-velocity-bias)
                    (inverse-inertia body-inverse-inertia)
                    (inverse-mass body-inverse-mass)
                    (velocity-bias body-velocity-bias)) body
     (setf velocity-bias (vec+ velocity-bias (vec* impulse inverse-mass)))
-    (incf angular-velocity-bias (* inverse-inertia (vec-cross relative impulse)))))
+    (incf angular-velocity-bias (* inverse-inertia (vec-cross relative impulse))))
+  (values))
 
 (defun body-reset-forces (body)
   "Zero the forces on a body."
@@ -162,4 +198,4 @@ Warning: Large damping values can be unstable. Use a DAMPED-SPRING constraint fo
          (f (vec* normal (+ f-spring f-damp))))
     ;; Apply!
     (body-apply-force body1 f anchor1)
-    (body-apply-force body2 (vec-neg f) anchor2)))
+    (body-apply-force body2 (vec- f) anchor2)))

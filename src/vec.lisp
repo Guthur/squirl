@@ -27,9 +27,10 @@
   (name form)
 where NAME is a symbol, and FORM evaluates to a `vec'.
 WITH-VEC binds NAME.x and NAME.y in the same manner as `with-accessors'."
-  (let ((name (if (listp form) (first form) form))
-        (place (if (listp form) (second form) form)))
-    `(with-place (,(format nil "~A." name) vec-)
+  (let* ((name (ensure-car form))
+         (place (ensure-cadr form))
+         (*package* (symbol-package name)))
+    `(with-place (,(symbolicate name ".") vec-)
          (x y) ,place
        ,@body)))
 
@@ -41,7 +42,12 @@ WITH-VEC binds NAME.x and NAME.y in the same manner as `with-accessors'."
          (inline vec-zerop))
 (defun vec-zerop (vec)
   "Checks whether VEC is a zero vector"
-  (zerop vec))
+  (= vec +zero-vector+))
+
+(declaim (ftype (function (vec vec) boolean) vec-equal)
+         (inline vec-equal))
+(defun vec-equal (a b)
+  (= a b))
 
 (declaim (ftype (function (real) vec) angle->vec)
          (inline angle->vec))
@@ -57,43 +63,21 @@ WITH-VEC binds NAME.x and NAME.y in the same manner as `with-accessors'."
   (with-vec vec
     (atan vec.y vec.x)))
 
-(define-compiler-macro vec+ (&whole whole &rest rest)
+(define-compiler-macro vec+ (&rest rest)
   (declare (list rest))
   (cond
     ((null rest)
      +zero-vector+)
     ((= 1 (length rest))
      (car rest))
-    ((= 2 (length rest))
-     (let ((a (gensym))
-           (b (gensym)))
-       `(let ((,a ,(first rest))
-              (,b ,(second rest)))
-          (declare (vec ,a ,b))
-          (+ ,a ,b))))
-    (t whole)))
+    (t `(+ ,@rest))))
 
 (defun vec+ (&rest vectors)
   (apply #'+ vectors))
 
-(defun vec-neg (vec)
-  (declare (vec vec))
-  (- vec))
-
-(define-compiler-macro vec- (&whole whole &rest rest)
+(define-compiler-macro vec- (&rest rest)
   (declare (list rest))
-  (cond
-    ((= 1 (length rest))
-     `(vec-neg ,(car rest)))
-    ((= 2 (length rest))
-     (let ((a (gensym))
-           (b (gensym)))
-       `(let ((,a ,(first rest))
-              (,b ,(second rest)))
-          (declare (vec ,a ,b))
-          (vec (- (vec-x ,a) (vec-x ,b))
-               (- (vec-y ,a) (vec-y ,b))))))
-    (t whole)))
+  `(- ,@rest))
 
 (defun vec- (minuend &rest subtrahends)
   (declare (vec minuend))

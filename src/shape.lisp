@@ -13,8 +13,8 @@
   body                           ; Body to which the shape is attached
   bbox                           ; Cached BBox for the shape
   ;; Surface Properties
-  (restitution 0d0 :type double-float)                 ; Coefficient of restitution.
-  (friction 0d0 :type double-float)                   ; Coefficient of friction.
+  (restitution 0d0 :type double-float)  ; Coefficient of restitution.
+  (friction 0d0 :type double-float)     ; Coefficient of friction.
   (surface-velocity +zero-vector+ :type vec) ; Surface velocity used when solving for friction
   ;; Unique ID, used internally for hashing
   (id (prog1 *shape-id-counter* (incf *shape-id-counter*))
@@ -33,15 +33,41 @@
                     (print-unreadable-object ((shape-body shape)
                                               *standard-output* :identity t :type nil))))))
 
-(defun attach-shape (shape body)
-  "Attaches SHAPE to BODY. All shapes must be attached to a body before they're used."
+(defun calculate-inertia (body)
+  (if (= 0 (body-mass body))
+      most-positive-double-float
+      (float
+       (loop for shape in (body-shapes body)
+          summing
+          (etypecase shape
+            (circle (moment-of-inertia-for-circle (body-mass body) 1
+                                                  (circle-radius shape) (circle-center shape)))
+            (segment (moment-of-inertia-for-segment (body-mass body)
+                                                    (segment-a shape) (segment-b shape)))
+            (poly (moment-of-inertia-for-poly (body-mass body) (poly-vertices shape)))))
+       1d0)))
+
+(defun %attach-shape (shape body)
   (setf (shape-body shape) body)
   (pushnew shape (body-%shapes (shape-body shape)))
   (shape-cache-data shape)
   (when (body-world body)
     (if (staticp body)
         (world-add-static-shape (body-world body) shape)
-        (world-add-active-shape (body-world body) shape)))
+        (world-add-active-shape (body-world body) shape))))
+
+(defun attach-shape (shape body)
+  "Attaches SHAPE to BODY. All shapes must be attached to a body before they're used."
+  (%attach-shape shape body)
+  (when (body-calculate-inertia-p body)
+    (setf (body-inertia body) (calculate-inertia body)))
+  body)
+
+(defun attach-shapes (shapes body)
+  "Attaches multiple shapes to BODY. This function adds all the shapes before recalculating inertia."
+  (map nil (fun (%attach-shape _ body)) shapes)
+  (when (body-calculate-inertia-p body)
+    (setf (body-inertia body) (calculate-inertia body)))
   body)
 
 (defun detach-shape (shape body)
@@ -50,6 +76,8 @@
   (setf (shape-body shape) nil)
   (when (body-world body)
     (world-remove-shape (body-world body) shape))
+  (when (body-calculate-inertia-p body)
+    (setf (body-inertia body) (calculate-inertia body)))
   shape)
 
 (defgeneric compute-shape-bbox (shape)
@@ -77,9 +105,10 @@
 ;;;
 (defstruct (circle (:constructor %make-circle (radius center restitution friction))
                    (:include shape))
-  radius
+  (radius (assert nil) :type double-float)
   ;; Center, in body-relative and world coordinates
-  center transformed-center)
+  (center (assert nil) :type vec)
+  (transformed-center +zero-vector+ :type vec))
 
 (defun make-circle (radius &key (center +zero-vector+) (restitution 0d0) (friction 0d0))
   (%make-circle (float radius 1d0) center (float restitution 1d0) (float friction 1d0)))
@@ -89,6 +118,7 @@
           (circle-center circle) (circle-radius circle)))
 
 (defmethod compute-shape-bbox ((circle circle))
+  (declare (optimize speed))
   (with-vec (vec (circle-transformed-center circle))
     (let ((r (circle-radius circle)))
       (make-bbox (- vec.x r) (- vec.y r) (+ vec.x r) (+ vec.y r)))))
@@ -144,13 +174,8 @@
 (defmethod compute-shape-bbox ((seg segment))
   (with-place (|| segment-) ((ta trans-a) (tb trans-b) (r radius)) seg
     (with-vecs (ta tb)
-      (flet ((box (left right)
-               (if (< ta.y tb.y)
-                   (make-bbox left (- ta.y r) right (+ tb.y r))
-                   (make-bbox left (- tb.y r) right (+ tb.y r)))))
-        (if (< ta.x tb.x)
-            (box (- ta.x r) (+ tb.x r))
-            (box (- tb.x r) (+ tb.x r)))))))
+      (make-bbox (- (min ta.x tb.x) r) (- (min ta.y tb.y) r)
+                 (+ (max ta.x tb.x) r) (+ (max ta.y tb.y) r)))))
 
 (defmethod shape-cache-data ((seg segment))
   (with-place (seg.t segment-trans-) (a b normal) seg
@@ -171,7 +196,7 @@
       (let* ((dn (- (vec. seg-tnormal point) (vec. seg-ta seg-tnormal)))
              (dist (- (abs dn) seg-r)))
         (if (plusp dist)
-            (return-from shape-point-query t)
+            (return-from shape-point-query nil)
             ;; calculate tangential distance along segment
             (let ((dt (- (vec-cross seg-tnormal point)))
                   (dt-min (- (vec-cross seg-tnormal seg-ta)))
@@ -193,7 +218,7 @@
 (defmethod shape-segment-query ((seg segment) a b)
   (let ((n (segment-trans-normal seg)))
     (when (< (vec. a n) (vec. (segment-trans-a seg) n))
-      (setf n (vec-neg n)))
+      (setf n (vec- n)))
     (let* ((an (vec. a n))
            (bn (vec. b n))
            (d (+ (vec. (segment-trans-a seg) n) (segment-radius seg)))

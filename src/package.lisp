@@ -2,8 +2,32 @@
 
 (in-package :cl-user)
 
-(defpackage squirl
+(defpackage squirl.utils
   (:use :cl)
+  (:export :make-adjustable-vector
+           :ensure-list
+           :clamp
+           :maybe/
+           :maybe-inverse
+           :fun :_
+           :deletef
+           :delete-iff
+           :with-gensyms
+           :without-floating-point-underflow
+           :symbolicate
+           :ensure-car
+           :ensure-cadr
+           :push-cons
+           :define-constant
+           :define-print-object
+           :do-vector
+           :with-place
+           :aprog1 :aif :awhen :it
+           :parse-defmethod
+           :pop-declarations))
+
+(defpackage squirl
+  (:use :cl :squirl.utils)
   (:export
 
    ;; Vector math
@@ -15,15 +39,46 @@
    :vec*
    :+zero-vector+
    :vec-length
+   :vec-lerp
+   :vec-zerop
+   :vec-equal
+   :angle->vec
+   :vec->angle
+   :vec.
+   :vec-cross
+   :vec-perp
+   :vec-rperp
+   :vec-project
+   :vec-rotate
+   :vec-unrotate
+   :vec-length-sq
+   :vec-normalize
+   :vec-clamp
+   :vec-dist
+   :vec-dist-sq
+   :vec-near
 
    ;; Bodies
    :body
+   :defbody
    :make-body
+   :body-world
+   :body-actor
    :body-rotation
    :body-angle
    :body-position
    :body-velocity
+   :body-force
    :body-shapes
+   :staticp
+   :body-update-velocity
+   :body-update-position
+   :body-slew
+   :body-local->world
+   :world->body-local
+   :body-reset-forces
+   :body-apply-force
+   :apply-damped-spring
 
    ;; Shapes
    :reset-shape-id-counter
@@ -43,12 +98,13 @@
    :make-poly
    :poly-transformed-vertices
    :attach-shape
+   :attach-shapes
    :detach-shape
 
    ;; moments
-   :moment-for-circle
-   :moment-for-segment
-   :moment-for-poly
+   :moment-of-inertia-for-circle
+   :moment-of-inertia-for-segment
+   :moment-of-inertia-for-poly
 
    ;; world
    :world
@@ -69,9 +125,20 @@
    :world-static-shapes
    :resize-world-static-hash
    :resize-world-active-hash
+   :rehash-world-static-data
+   :world-point-query-first
    :world-step
 
    ;; constraints
+   :body-a
+   :body-b
+   :anchor1
+   :anchor2
+   :rest-length
+   :stiffness
+   :damping
+   :constraint-body-a
+   :constraint-body-b
    :breakable-joint
    :make-breakable-joint
    :pivot-joint
@@ -80,6 +147,7 @@
    :make-damped-rotary-spring
    :damped-spring
    :make-damped-spring
+   :spring-stiffness
    :gear-joint
    :make-gear-joint
    :groove-joint
@@ -100,5 +168,14 @@
    :make-spring
 
    ;; callbacks
+   :world-collision-callback
    :collide
+   :defcollision
+
+   ;; convenience
+   :make-rectangle
+   :make-circle-body
+   :make-segment-body
+   :make-poly-body
+   :make-rectangle-body
    ))

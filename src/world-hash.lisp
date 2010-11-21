@@ -24,11 +24,11 @@
              (:constructor make-world-hash
                            (cell-size size &aux (table (make-world-hash-table size)))))
   "The spatial hash is SquirL's default (and currently only) spatial index"
-  cell-size                             ; Size of the hash's cells
-  (handle-set (make-hash-set 0 #'handle-equal)) ; `hash-set' of all handles
-  table                                         ; Bins in use
+  (cell-size (assert nil) :type double-float) ; Size of the hash's cells
+  (handle-set (make-hash-set 0 #'handle-equal) :type hash-set) ; `hash-set' of all handles
+  (table (assert nil) :type simple-vector) ; Bins in use
   ;;  (junk nil)                                    ; The "recycle bin"
-  (stamp 1)            ; Incremented on each query; see `handle-stamp'
+  (stamp 1 :type fixnum) ; Incremented on each query; see `handle-stamp'
   )
 
 (define-print-object (world-hash))
@@ -133,7 +133,7 @@ list structure into the `world-hash-junk'."
   (map-hash-set (fun (funcall function (handle-object _)))
                 (world-hash-handle-set hash)))
 
-(defun query (function hash chain object)
+(defun map-world-hash-chain (function hash chain object)
   (loop for handle in chain
      unless (or (= (handle-stamp handle) (world-hash-stamp hash))
                 (eq object (handle-object handle))
@@ -142,16 +142,16 @@ list structure into the `world-hash-junk'."
        (stamp-handle handle hash)))
 
 (defun world-hash-point-query (function hash point)
-  (let* ((dim (world-hash-cell-size hash))
-         (idx (with-vec (pt point)
-                (hash (floor (/ pt.x dim)) (floor (/ pt.y dim))
-                      (world-hash-size hash)))))
-    (query function hash (world-hash-chain hash idx) point))
-  (incf (world-hash-stamp hash)))
+  (prog1 (let* ((dim (world-hash-cell-size hash))
+                (idx (with-vec (pt point)
+                       (hash (floor (/ pt.x dim)) (floor (/ pt.y dim))
+                             (world-hash-size hash)))))
+           (map-world-hash-chain function hash (world-hash-chain hash idx) point))
+    (incf (world-hash-stamp hash))))
 
 (defun world-hash-query (function hash object bbox)
   (do-bbox (chain hash bbox)
-    do (query function hash chain object))
+    do (map-world-hash-chain function hash chain object))
   (incf (world-hash-stamp hash)))
 
 (defun world-hash-query-rehash (function hash)
@@ -161,7 +161,7 @@ list structure into the `world-hash-junk'."
                     (do-bbox (chain-form hash (shape-bbox object))
                       for chain = chain-form
                       unless (find _ chain) do
-                        (query function hash chain object)
+                        (map-world-hash-chain function hash chain object)
                         (push _ chain-form)))
                   (incf (world-hash-stamp hash)))
                 (world-hash-handle-set hash)))
@@ -189,7 +189,7 @@ list structure into the `world-hash-junk'."
         (if (> b.y a.y)
             (setf y-inc  1 next-v (* (- (floor (1+ a.x)) a.x) dt/dy))
             (setf y-inc -1 next-v (* (- a.y      (floor a.y)) dt/dy)))
-        (let ((cell-size (world-hash-cell-size hash)))
+        (let ((cell-size (world-hash-size hash)))
           (loop while (< ratio exit-ratio) for index = (hash cell-x cell-y cell-size)
              for new-ratio = (query-segment function hash (world-hash-chain hash index))
              do (setf exit-ratio (min exit-ratio new-ratio))

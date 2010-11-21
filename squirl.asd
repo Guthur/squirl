@@ -7,10 +7,12 @@
   :components
   ((:module "src"
             :components
-            ((:file "arbiter"        :depends-on ("vec" "shape" "constraints"))
+            ((:file "arbiter"        :depends-on ("vec" "shape" "collision" "contact"))
              (:file "body"           :depends-on ("vec"))
              (:file "bounding-box"   :depends-on ("vec"))
-             (:file "collision"      :depends-on ("shape" "poly-shape"))
+             (:file "collision"      :depends-on ("shape" "poly-shape" "contact"))
+             (:file "contact"        :depends-on ("vec"))
+             (:file "convenience"    :depends-on ("body" "shape" "poly-shape" "vec"))
              (:file "hash-set"       :depends-on ("utils"))
              (:file "package")
              (:file "shape"          :depends-on ("vec" "bounding-box" "body"))
@@ -20,7 +22,7 @@
              (:file "vec"            :depends-on ("utils"))
              (:file "world"          :depends-on ("vec" "arbiter" "body"))
              (:file "world-hash"     :depends-on ("hash-set" "vec"))
-             (:module "constraints"  :depends-on ("shape" "poly-shape" "collision")
+             (:module "constraints"  :depends-on ("shape" "poly-shape" "arbiter")
                       :components
                       ((:file "breakable-joint"      :depends-on ("constraints"))
                        (:file "constraints"          :depends-on ("util"))
@@ -41,11 +43,21 @@
   :version "0.1 (unreleased)"
   :maintainer "Josh Marchán <sykopomp@sykosomatic.org>"
   :licence "MIT"
-  :depends-on (:squirl :until-it-dies.base)
+  :depends-on (:squirl :cl-opengl :cl-glu :cl-glut)
   :components
   ((:module "demo"
             :components
-            ((:file "test")))))
+            ((:file "squirl-demo")
+             (:file "draw-world" :depends-on ("squirl-demo"))
+             (:file "logo-smash" :depends-on ("squirl-demo"))
+             (:file "planet" :depends-on ("squirl-demo"))
+             (:file "tumble" :depends-on ("squirl-demo"))
+             (:file "plink" :depends-on ("squirl-demo"))
+             (:file "pump" :depends-on ("squirl-demo"))
+             (:file "pyramid" :depends-on ("squirl-demo"))
+             (:file "pyramid-stack" :depends-on ("squirl-demo"))
+             (:file "theo-jansen" :depends-on ("squirl-demo"))
+             (:file "springies" :depends-on ("squirl-demo"))))))
 
 (asdf:defsystem squirl.demo-2
   :version "0.1 (unreleased)"

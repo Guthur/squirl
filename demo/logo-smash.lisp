@@ -39,57 +39,39 @@
 (defparameter *image-row-length* 24)
 (defvar *bullet*)
 
+(defclass logo-smash (demo)
+  ()
+  (:default-initargs :name "Smash that damn logo." :physics-timestep 1/60
+    :draw-shapes-p nil :draw-bb-p nil :body-point-size 3 :collision-point-size 0))
+
 (defun get-pixel (x y)
-  (logand (ash (svref *logo* (+ (ash x -3) (* y *image-row-length*)))
-               (logand (1+ (lognot x)) #x7)) 1))
-
-(defproto =logo-smash= (=engine=)
-  ((title "Murder that logo!")
-   (window-width 500)
-   (window-height 500)
-   (clear-color *white*)
-   (world nil)))
-
-(defun ortho-projection (demo)
-  (with-properties (window-width window-height) demo
-    (gl:matrix-mode :projection)
-    (gl:load-identity)
-    (gl:viewport 0 0 window-width window-height)
-    (gl:ortho (- (/ window-width 2)) (/ window-width 2) (- (/ window-height 2)) (/ window-height 2) 10 0)
-    (gl:matrix-mode :modelview)))
-
-(defreply update ((engine =logo-smash=) dt &key)
-  (world-step (world engine) (* 1d0 dt)))
-
-(defun draw-pixel (body)
-  (let* ((position (body-position body))
-         (x (vec-x position))
-         (y (vec-y position)))
-    (if (eq body *bullet*)
-        (draw-circle (make-point x y) 8 :resolution 50 :color *red*)
-        (draw-circle (make-point x y) 1 :resolution 50 :color *black*))))
-
-(defreply draw ((engine =logo-smash=) &key)
-  (map-world #'draw-pixel (world engine)))
+  (oddp (ash (svref *logo* (+ (ash x -3) (* y *image-row-length*)))
+             (- (mod x 8) 7))))
 
 (defun make-ball (x y)
-  (let ((body (make-body :mass 1.0 :position (vec x y))))
-    (attach-shape (make-circle 0.95) body)
-     body))
+  (make-body :mass 1.0 :position (vec x y) :shapes (list (make-circle 0.95))))
 
-(defreply init :after ((engine =logo-smash=) &key)
-  "foo"
-  (ortho-projection engine)
-  (setf (world engine) (make-world :iterations 1))
+(defmethod update-demo ((demo logo-smash) dt)
+  (declare (ignore dt))
+  (world-step (world demo) (physics-timestep demo)))
+
+(defmethod init-demo ((demo logo-smash))
+  (setf (world demo) (make-world :iterations 1))
+  (resize-world-active-hash (world demo) 2.0 10000)
   (loop for y below *image-height*
      do (loop for x below *image-width*
            for x-jitter = (random 0.05) for y-jitter = (random 0.05)
-           unless (zerop (get-pixel x y))
+           when (get-pixel x y)
            do (let ((ball (make-ball (* 2 (- x (/ *image-width* 2) (- x-jitter)))
                                      (* 2 (- (/ *image-height* 2) y (- y-jitter))))))
-                (world-add-body (world engine) ball))))
-  (let ((bullet (make-body :position (vec -1000 -10)
-                           :velocity (vec 400 0))))
+                (world-add-body (world demo) ball))))
+  (let ((bullet (make-body :position (vec -800 -10)
+                           :velocity (vec 400 0)
+                           :mass 100000 :inertia 100000
+                           :actor :not-grabbable)))
     (attach-shape (make-circle 8) bullet)
-    (world-add-body (world engine) bullet)
-    (setf *bullet* bullet)))
+    (world-add-body (world demo) bullet)
+    (setf *bullet* bullet))
+  (world demo))
+
+(pushnew 'logo-smash *demos*)

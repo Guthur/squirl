@@ -10,9 +10,12 @@
 (defparameter *initial-count* 1000)
 (defparameter *initial-array-length* 4)
 
+(defgeneric collide (actor1 actor2 arbiter)
+  (:method ((actor1 t) (actor2 t) (arbiter t)) t))
+
 (defstruct (world
              (:constructor %make-world
-                           (&key iterations elastic-iterations gravity damping)))
+                           (&key iterations elastic-iterations gravity damping collision-callback)))
   ;; Number of iterations to use in the impulse solver to solve contacts.
   (iterations *default-iterations* :type fixnum)
   ;; Number of iterations to use in the impulse solver to solve elastic collisions.
@@ -20,35 +23,44 @@
   ;; Default gravity to supply when integrating rigid body motions.
   (gravity +zero-vector+ :type vec)
   ;; Default damping to supply when integrating rigid body motions.
-  (damping 1.0)
+  (damping 1d0 :type double-float)
 
   ;; Internal slots
-  (timestamp 0)  ; Time stamp, incremented on every call to WORLD-STEP
+  (timestamp 0 :type fixnum)  ; Time stamp, incremented on every call to WORLD-STEP
   ;; Static and active shape spatial hashes
-  (static-shapes (make-world-hash *initial-cell-size* *initial-count*))
-  (active-shapes (make-world-hash *initial-cell-size* *initial-count*))
+  (static-shapes (make-world-hash *initial-cell-size* *initial-count*) :type world-hash)
+  (active-shapes (make-world-hash *initial-cell-size* *initial-count*) :type world-hash)
   ;; Static and active bodies
-  (static-bodies (make-adjustable-vector *initial-array-length*))
-  (active-bodies (make-adjustable-vector *initial-array-length*))
+  (static-bodies (make-adjustable-vector *initial-array-length*) :type (vector t))
+  (active-bodies (make-adjustable-vector *initial-array-length*) :type (vector t))
   ;; Active arbiters for the impulse solver.
-  (arbiters (make-adjustable-vector *initial-array-length*))
-  (contact-set (make-hash-set 0 #'arbiter-shapes-equal)) ; Persistent contact set.
+  (arbiters (make-adjustable-vector *initial-array-length*) :type (vector t))
+  (contact-set (make-hash-set 0 #'arbiter-shapes-equal) :type hash-set) ; Persistent contact set.
   ;; Constraints in the system.
-  (constraints (make-adjustable-vector *initial-array-length*))
-  arbitrator)
+  (constraints (make-adjustable-vector *initial-array-length*) :type (vector t))
+  arbitrator
+
+  ;; Collision callback
+  (collision-callback #'collide))
 
 (defun make-world (&rest keys)
   (declare (dynamic-extent keys))
   (let ((world (apply #'%make-world keys)))
     (with-place (|| world-) (contact-set timestamp arbiters) world
       (setf (world-arbitrator world)
+            ;; Let us thank Scott Lembcke, who had to hunt bugs down and code solutions
+            ;; in C, while we can simply port said solutions into CL.
             (lambda (shape1 shape2)
+              ;; This is a kludge. It might break on new shape types.
               (when (or (and (poly-p shape1) (circle-p shape2))
                         (and (poly-p shape1) (segment-p shape2)))
                 (rotatef shape1 shape2))
               (when (collision-possible-p shape1 shape2)
                 (awhen (collide-shapes shape1 shape2)
                   (let ((arbiter (ensure-arbiter shape1 shape2 contact-set timestamp)))
+                    ;; This is also a kludge... got any better ideas?
+                    (setf (arbiter-shape-a arbiter) shape1
+                          (arbiter-shape-b arbiter) shape2)
                     (vector-push-extend arbiter arbiters)
                     (arbiter-inject arbiter it)))))))
     world))
@@ -61,10 +73,33 @@
           (+ (length (world-active-bodies world))
              (length (world-static-bodies world)))))
 
-(defgeneric collide (actor1 actor2 contacts)
-  (:method (actor1 actor2 contacts)
-    (declare (ignore actor1 actor2 contacts))
-    t))
+(defmacro defcollision (&body args)
+  (multiple-value-bind (qualifiers lambda-list body)
+      (parse-defmethod args)
+    (destructuring-bind (arg-a arg-b arbiter) lambda-list
+      (flet ((parse-specialized-arg (arg)
+               (etypecase arg
+                 (symbol (values arg t))
+                 (list (destructuring-bind (arg-name specializer) arg
+                         (values arg-name specializer))))))
+        (multiple-value-bind (actor-a spec-a)
+            (parse-specialized-arg arg-a)
+          (multiple-value-bind (actor-b spec-b)
+              (parse-specialized-arg arg-b)
+            (with-gensyms (cnm-sym nmp-sym)
+              (if (equal spec-a spec-b)
+                  `(defmethod collide ,@qualifiers ,lambda-list ,@body)
+                  `(flet ((handler (,actor-a ,actor-b ,arbiter ,cnm-sym ,nmp-sym)
+                            ,@(pop-declarations body)
+                            (flet ((call-next-method (&rest cnm-args)
+                                     (apply ,cnm-sym cnm-args))
+                                   (next-method-p () (funcall ,nmp-sym)))
+                              (declare (ignorable #'call-next-method #'next-method-p))
+                              ,@body)))
+                     (defmethod collide ,@qualifiers (,arg-a ,arg-b ,arbiter)
+                       (handler ,actor-a ,actor-b ,arbiter #'call-next-method #'next-method-p))
+                     (defmethod collide ,@qualifiers (,arg-b ,arg-a ,arbiter)
+                       (handler ,actor-a ,actor-b ,arbiter #'call-next-method #'next-method-p)))))))))))
 
 ;;;
 ;;; Body, Shape, and Joint Management
@@ -85,15 +120,19 @@
 (defun world-add-body (world body)
   ;; FLET or MACROLET this up please
   (cond ((staticp body)
+         (assert (not (find body (world-static-bodies world))))
          (vector-push-extend body (world-static-bodies world))
          (dolist (shape (body-shapes body))
            (world-add-static-shape world shape)))
-        (t (vector-push-extend body (world-active-bodies world))
+        (t (assert (not (find body (world-active-bodies world))))
+           (vector-push-extend body (world-active-bodies world))
            (dolist (shape (body-shapes body))
              (world-add-active-shape world shape))))
+  (setf (body-world body) world)
   body)
 
 (defun world-add-constraint (world constraint)
+  (assert (not (find constraint (world-constraints world))))
   (vector-push-extend constraint (world-constraints world))
   constraint)
 
@@ -181,11 +220,11 @@
 ;;;
 
 (defun resize-world-static-hash (world dimension count)
-  (resize-world-hash (world-static-shapes world) dimension count)
+  (resize-world-hash (world-static-shapes world) (float dimension 1d0) count)
   (rehash-world-hash (world-static-shapes world)))
 
 (defun resize-world-active-hash (world dimension count)
-  (resize-world-hash (world-active-shapes world) dimension count))
+  (resize-world-hash (world-active-shapes world) (float dimension 1d0) count))
 
 (defun rehash-world-static-data (world)
   (map-world-hash #'shape-cache-data (world-static-shapes world))
@@ -210,7 +249,7 @@
   (delete-iff (world-arbiters world)
               (fun (let ((a (body-actor (shape-body (arbiter-shape-a _))))
                          (b (body-actor (shape-body (arbiter-shape-b _)))))
-                     (when (or a b) (not (collide a b (arbiter-contacts _))))))))
+                     (when (or a b) (not (funcall (world-collision-callback world) a b _)))))))
 
 (defun flush-arbiters (world)
   "Flush outdated arbiters."
@@ -255,10 +294,10 @@
   (with-place (|| world-) (arbiters constraints elastic-iterations) world
     (loop repeat elastic-iterations
        do (do-vector (arbiter arbiters)
-            (arbiter-apply-impulse arbiter 1d0))
+            (arbiter-apply-impulse arbiter t))
           (map nil #'apply-impulse constraints))))
 
-(defun integrate-velocities (world dt &aux (damping (expt (world-damping world) (- dt))))
+(defun integrate-velocities (world dt &aux (damping (expt (/ (world-damping world)) (- dt))))
   (with-place (|| world-) (active-bodies arbiters gravity) world
     ;; Apply gravity forces.
     (do-vector (body active-bodies)
@@ -269,21 +308,24 @@
 (defun solve-impulses (world)
   "Run the impulse solver, using the old-style elastic solver if elastic iterations are disabled"
   (with-place (|| world-) (iterations elastic-iterations arbiters constraints) world
-    (loop with elastic-coef = (if (zerop elastic-iterations) 1d0 0d0)
+    (loop with old-style-p = (zerop elastic-iterations)
        repeat iterations do
-         (do-vector (arbiter arbiters)
-           (arbiter-apply-impulse arbiter elastic-coef))
-         (map nil #'apply-impulse constraints))))
+       (do-vector (arbiter arbiters)
+         (arbiter-apply-impulse arbiter old-style-p))
+       (do-vector (constraint constraints)
+         (apply-impulse constraint)))))
 
-(defun world-step (world timestep &aux (dt (float timestep 0d0)) (dt-inv (/ dt)))
+(defun world-step (world timestep)
   "Step the physical state of WORLD by DT seconds."
-  (with-place (|| world-) (active-bodies active-shapes) world
-    (flush-arbiters world)
-    (do-vector (body active-bodies)
-      (body-update-position body dt)) ; Integrate positions
-    (resolve-collisions world)
-    (prestep-world world dt dt-inv)
-    (apply-elastic-impulses world)
-    (integrate-velocities world dt)
-    (solve-impulses world)
-    (incf (world-timestamp world))))
+  (assert (not (zerop timestep)) (world) "Cannot step ~A by 0" world)
+  (let* ((dt (float timestep 0d0)) (dt-inv (/ dt)))
+    (with-place (|| world-) (active-bodies active-shapes) world
+      (flush-arbiters world)
+      (do-vector (body active-bodies)
+        (body-update-position body dt)) ; Integrate positions
+      (resolve-collisions world)
+      (prestep-world world dt dt-inv)
+      (apply-elastic-impulses world)
+      (integrate-velocities world dt)
+      (solve-impulses world)
+      (incf (world-timestamp world)))))
